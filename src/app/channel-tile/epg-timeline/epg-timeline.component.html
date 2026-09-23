@@ -1,0 +1,11 @@
+<div class="epg-timeline">
+  <ng-container *ngIf="fetched && epgs.length > 0">
+    <div class="epg-block" *ngFor="let epg of epgs" [ngbTooltip]="tooltip(epg)" container="body"
+      [ngClass]="{ 'now-playing': isNowPlaying(epg) }" [style.left.%]="leftPercent(epg)"
+      [style.width.%]="widthPercent(epg)" (click)="onProgrammeClick(epg, $event)">
+      <span class="epg-title">{{ epg.title }}</span>
+    </div>
+    <div class="now-line" *ngIf="showNowLine()" [style.left.%]="nowPercent()"></div>
+  </ng-container>
+  <div class="epg-empty" *ngIf="fetched && epgs.length === 0">No EPG data</div>
+</div>

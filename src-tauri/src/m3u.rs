@@ -243,24 +243,23 @@ fn get_channel_from_lines(
     if second.is_empty() {
         bail!("second line is empty");
     }
+    let tvg_id = ID_REGEX
+        .captures(&first)
+        .and_then(extract_non_empty_capture)
+        .map(|x| x.trim().to_string());
     let name = NAME_REGEX
         .captures(&first)
         .and_then(extract_non_empty_capture)
         .or_else(|| {
-            let id = || {
-                ID_REGEX
-                    .captures(&first)
-                    .and_then(extract_non_empty_capture)
-            };
             let name_alt = || {
                 NAME_REGEX_ALT
                     .captures(&first)
                     .and_then(extract_non_empty_capture)
             };
             if let Some(true) = use_tvg_id {
-                return id().or(name_alt());
+                return tvg_id.clone().or_else(name_alt);
             } else {
-                return name_alt().or(id());
+                return name_alt().or_else(|| tvg_id.clone());
             }
         })
         .context("Couldn't find name from Name or ID")?;
@@ -283,6 +282,7 @@ fn get_channel_from_lines(
         favorite: false,
         stream_id: None,
         tv_archive: None,
+        tvg_id,
         season_id: None,
         episode_num: None,
         hidden: Some(false),

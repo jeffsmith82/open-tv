@@ -33,6 +33,7 @@ export class SettingsComponent {
   viewModeEnum = ViewMode;
   sources: Source[] = [];
   expiries: Record<number, number> = {};
+  timezones: Record<number, string> = {};
   sortTypes = SORT_TYPES;
   @ViewChild("mpvParams") mpvParams!: ElementRef;
 
@@ -75,8 +76,10 @@ export class SettingsComponent {
   ngOnInit(): void {
     this.getSettings();
     this.getSources();
-    if (this.memory.XtreamSourceIds.size > 0)
+    if (this.memory.XtreamSourceIds.size > 0) {
       this.getExpiries();
+      this.getTimezones();
+    }
   }
 
   getSettings() {
@@ -111,6 +114,12 @@ export class SettingsComponent {
     });
   }
 
+  getTimezones() {
+    invoke("get_all_timezones").then(timezones => {
+      this.timezones = timezones as Record<number, string>;
+    });
+  }
+
   ngAfterViewInit(): void {
     this.subscriptions.push(
       fromEvent(this.mpvParams.nativeElement, "keyup")
@@ -139,9 +148,15 @@ export class SettingsComponent {
 
   async refreshAll() {
     this.memory.SeriesRefreshed.clear();
-    await this.memory.tryIPC("Successfully updated all sources", "Failed to refresh sources", () =>
-      invoke("refresh_all"),
+    const failed = await this.memory.tryIPC(
+      "Successfully updated all sources",
+      "Failed to refresh sources",
+      () => invoke("refresh_all"),
     );
+    // Same staleness issue as source-tile.component.ts's refresh() - unlike
+    // that one, this touches every source at once rather than one known
+    // row, so a full re-fetch is simpler than guessing each timestamp.
+    if (!failed) this.getSources();
   }
 
   async goBack() {
@@ -184,6 +199,16 @@ export class SettingsComponent {
       "Failed to clear history",
       async () => {
         await invoke("clear_history");
+      },
+    );
+  }
+
+  async clearEpgCache() {
+    await this.memory.tryIPC(
+      "EPG cache cleared successfully",
+      "Failed to clear EPG cache",
+      async () => {
+        await invoke("clear_epg_cache");
       },
     );
   }

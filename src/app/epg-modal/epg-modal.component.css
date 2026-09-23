@@ -12,6 +12,12 @@
   cursor: pointer;
 }
 
+.arrow.disabled {
+  opacity: 0.25;
+  cursor: default;
+  pointer-events: none;
+}
+
 .date-text {
   font-size: 1.1rem;
 }

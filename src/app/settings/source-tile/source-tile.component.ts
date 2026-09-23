@@ -21,6 +21,8 @@ export class SourceTileComponent {
   source?: Source;
   @Input("expiry")
   expiry?: number;
+  @Input("timezone")
+  timezone?: string;
   showUsername = false;
   showPassword = false;
   loading = false;
@@ -41,8 +43,30 @@ export class SourceTileComponent {
 
   async refresh() {
     if (this.source?.source_type == SourceType.Xtream) this.memory.SeriesRefreshed.clear();
-    await this.memory.tryIPC("Successfully updated source", "Failed to refresh source", () =>
-      invoke("refresh_source", { source: this.source }),
+    const failed = await this.memory.tryIPC(
+      "Successfully updated source",
+      "Failed to refresh source",
+      () => invoke("refresh_source", { source: this.source }),
+    );
+    // refresh_source only returns success/failure, not the updated row, so
+    // the "Refreshed:" timestamp bound to this.source would otherwise stay
+    // stale (still whatever get_sources() returned on page load) until a
+    // full reload re-fetches sources from the DB.
+    if (!failed && this.source) this.source.last_updated = Math.floor(Date.now() / 1000);
+  }
+
+  async refreshEpg() {
+    const command = this.source?.epg_url ? "refresh_epg_only" : "refresh_xtream_epg_only";
+    await this.memory.tryIPC("Successfully refreshed EPG", "Failed to refresh EPG", () =>
+      invoke(command, { source: this.source }),
+    );
+  }
+
+  async pruneEpg() {
+    await this.memory.tryIPC(
+      "Successfully cleared old EPG data",
+      "Failed to clear old EPG data",
+      () => invoke("prune_old_epg", { source: this.source }),
     );
   }
 
@@ -117,9 +141,13 @@ export class SourceTileComponent {
     await this.memory.tryIPC("Successfully saved changes", "Failed to save changes", async () => {
       this.editableSource.user_agent = this.editableSource.user_agent?.trim();
       this.editableSource.stream_user_agent = this.editableSource.stream_user_agent?.trim();
+      this.editableSource.epg_url = this.editableSource.epg_url?.trim();
       if (this.editableSource.user_agent == "") this.editableSource.user_agent = undefined;
       if (this.editableSource.stream_user_agent == "")
         this.editableSource.stream_user_agent = undefined;
+      if (this.editableSource.epg_url == "") this.editableSource.epg_url = undefined;
+      if (!this.editableSource.epg_retention_days || this.editableSource.epg_retention_days < 1)
+        this.editableSource.epg_retention_days = undefined;
       await invoke("update_source", { source: this.editableSource });
       this.source = this.editableSource;
       this.editing = false;

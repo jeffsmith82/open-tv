@@ -1,5 +1,7 @@
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
+  ChangeDetectorRef,
   Component,
   ElementRef,
   Input,
@@ -18,8 +20,6 @@ import { NgbModal } from "@ng-bootstrap/ng-bootstrap";
 import { EditChannelModalComponent } from "../edit-channel-modal/edit-channel-modal.component";
 import { EditGroupModalComponent } from "../edit-group-modal/edit-group-modal.component";
 import { DeleteGroupModalComponent } from "../delete-group-modal/delete-group-modal.component";
-import { EpgModalComponent } from "../epg-modal/epg-modal.component";
-import { EPG } from "../models/epg";
 import { RestreamModalComponent } from "../restream-modal/restream-modal.component";
 import { DownloadService } from "../download.service";
 import { Download } from "../models/download";
@@ -36,6 +36,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   selector: "app-channel-tile",
   templateUrl: "./channel-tile.component.html",
   styleUrl: "./channel-tile.component.css",
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ChannelTileComponent implements OnDestroy, AfterViewInit {
   constructor(
@@ -46,10 +47,32 @@ export class ChannelTileComponent implements OnDestroy, AfterViewInit {
     private el: ElementRef,
     private renderer: Renderer2,
     private download: DownloadService,
+    private cdr: ChangeDetectorRef,
   ) { }
-  @Input() channel?: Channel;
+  private _channel?: Channel;
+  // Precomputed once when the channel input is set, instead of a method
+  // binding (a Map lookup) that OnPush would otherwise still re-run on
+  // every check of this component.
+  sourceName = "";
+  @Input() set channel(value: Channel | undefined) {
+    this._channel = value;
+    this.sourceName = value?.source_id
+      ? (this.memory.Sources.get(value.source_id)?.name ?? "")
+      : "";
+    // Virtual scroll recycles this component instance across many
+    // different channels as you scroll rather than destroying/recreating
+    // it - without resetting this here, one channel's image failing to
+    // load (a dead URL, a transient 503, ...) permanently poisons every
+    // later, completely unrelated channel this same recycled instance
+    // goes on to display.
+    this.showImage = true;
+  }
+  get channel(): Channel | undefined {
+    return this._channel;
+  }
   @Input() id!: number;
   @Input() viewMode: number = 0;
+  @Input() layout: "grid" | "list" = "grid";
   @ViewChild(MatMenuTrigger, { static: true }) matMenuTrigger!: MatMenuTrigger;
   menuTopLeftPosition = { x: 0, y: 0 };
   showImage: boolean = true;
@@ -61,6 +84,7 @@ export class ChannelTileComponent implements OnDestroy, AfterViewInit {
   viewModeEnum = ViewMode;
   subscriptions: Subscription[] = [];
   fade = false;
+  epgHovering = false;
 
   ngAfterViewInit(): void {
     this.getExistingDownload();
@@ -125,6 +149,10 @@ export class ChannelTileComponent implements OnDestroy, AfterViewInit {
       if (!file) return;
     }
     this.starting = true;
+    // OnPush only auto-checks this component for the synchronous portion of
+    // a template-bound event handler - everything after an `await` runs in
+    // a later microtask, so mutations there need to be flagged explicitly.
+    this.cdr.markForCheck();
     this.memory.SetFocus.next(this.id);
     try {
       await invoke("play", { channel: this.channel, record: record, recordPath: file });
@@ -136,6 +164,7 @@ export class ChannelTileComponent implements OnDestroy, AfterViewInit {
       this.error.handleError(e);
     });
     this.starting = false;
+    this.cdr.markForCheck();
   }
 
   onRightClick(event: MouseEvent) {
@@ -148,6 +177,7 @@ export class ChannelTileComponent implements OnDestroy, AfterViewInit {
     this.menuTopLeftPosition.y = event.clientY;
     if (this.memory.currentContextMenu?.menuOpen) this.memory.currentContextMenu.closeMenu();
     this.memory.currentContextMenu = this.matMenuTrigger;
+    this.cdr.markForCheck();
     this.matMenuTrigger.openMenu();
   }
 
@@ -175,6 +205,7 @@ export class ChannelTileComponent implements OnDestroy, AfterViewInit {
           this.fade = false;
         this.toastr.success(msg);
       }
+      this.cdr.markForCheck();
     } catch (e) {
       this.error.handleError(e, `Failed to add/remove "${this.channel?.name}" to/from favorites`);
     }
@@ -206,6 +237,7 @@ export class ChannelTileComponent implements OnDestroy, AfterViewInit {
       this.channel!.hidden = hide;
       this.fade = this.viewMode == ViewMode.Hidden ? !hide : hide;
       this.toastr.success(`${msg} (updates on reload)`);
+      this.cdr.markForCheck();
     } catch (e) {
       this.error.handleError(e, `Failed to hide/unhide "${this.channel?.name}"`);
     }
@@ -228,41 +260,12 @@ export class ChannelTileComponent implements OnDestroy, AfterViewInit {
   }
 
   showEPG(): boolean {
-    return (
-      this.channel?.media_type == MediaType.livestream &&
-      !this.isCustom() &&
-      this.memory.XtreamSourceIds.has(this.channel.source_id!)
-    );
-  }
-
-  getSourceName(): string {
-    if (!this.channel?.source_id) return "";
-    return this.memory.Sources.get(this.channel.source_id)?.name || "";
-  }
-
-  async showEPGModal() {
-    try {
-      let data: EPG[] = await invoke("get_epg", { channel: this.channel });
-      if (data.length == 0) {
-        this.toastr.info("No EPG data for this channel");
-        return;
-      }
-      this.memory.ModalRef = this.modal.open(EpgModalComponent, {
-        backdrop: "static",
-        size: "xl",
-        keyboard: false,
-      });
-      this.memory.ModalRef.result.then((_) => (this.memory.ModalRef = undefined));
-      this.memory.ModalRef.componentInstance.epg = data;
-      this.memory.ModalRef.componentInstance.name = this.channel?.name;
-      this.memory.ModalRef.componentInstance.channelId = this.channel?.id;
-      this.memory.ModalRef.componentInstance.sourceId = this.channel?.source_id;
-    } catch (e) {
-      this.error.handleError(
-        e,
-        "Missing stream id. Please refresh your sources (Settings -> Refresh All) to enable the EPG feature",
-      );
-    }
+    // EPG data now comes from the same tvg_id-keyed lookup regardless of
+    // source type (custom XMLTV guides work for Custom/M3U sources too,
+    // not just Xtream), and the timeline itself already shows "No EPG
+    // data" gracefully when there's nothing to display - so this just
+    // needs to be a livestream, not gated by source type or tvg_id.
+    return this.channel?.media_type == MediaType.livestream;
   }
 
   edit() {

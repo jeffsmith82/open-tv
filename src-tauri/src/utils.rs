@@ -5,7 +5,7 @@ use crate::{
     settings::{get_default_record_path, get_settings},
     source_type, sql,
     types::Source,
-    xtream,
+    xmltv, xtream,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local, Utc};
@@ -40,14 +40,55 @@ const DEFAULT_USER_AGENT: &str = "Fred TV";
 static ILLEGAL_CHARS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"[<>:"/\\|?*\x00-\x1F]"#).unwrap());
 
+static TVG_ID_QUALITY_SUFFIX_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@(sd|hd|fhd|uhd|4k)$").unwrap());
+
+// Playlists and EPG guides rarely agree on casing or on whether a quality
+// tag (e.g. "@SD"/"@HD") is part of the channel id, even when they're
+// describing the exact same channel (confirmed against a real guide: a
+// playlist's "BBCParliament.uk@SD" vs a guide's "bbcparliament.uk"). Used
+// on both sides of every EPG channel-id comparison so they compare equal.
+pub fn normalize_tvg_id(raw: &str) -> String {
+    let lower = raw.trim().to_lowercase();
+    TVG_ID_QUALITY_SUFFIX_REGEX.replace(&lower, "").to_string()
+}
+
 pub async fn refresh_source(source: Source) -> Result<()> {
     let id = source.id;
+    let source_for_epg = source.clone();
     match source.source_type {
         source_type::M3U => m3u::read_m3u8(source, true)?,
         source_type::M3U_LINK => m3u::get_m3u8_from_link(source, true).await?,
         source_type::XTREAM => xtream::get_xtream(source, true).await?,
         source_type::CUSTOM => {}
         _ => return Err(anyhow!("invalid source_type")),
+    }
+    if let Some(epg_url) = source_for_epg
+        .epg_url
+        .as_ref()
+        .filter(|u| !u.trim().is_empty())
+    {
+        log(format!(
+            "Refreshing EPG for source {} from {}",
+            source_for_epg.name, epg_url
+        ));
+        if let Err(e) = xmltv::refresh_epg(source_for_epg.clone()).await {
+            log(format!(
+                "Failed to refresh EPG for source {}: {:?}",
+                source_for_epg.name, e
+            ));
+        }
+    } else if source_for_epg.source_type == source_type::XTREAM {
+        log(format!(
+            "Refreshing EPG for source {} from xmltv.php",
+            source_for_epg.name
+        ));
+        if let Err(e) = xtream::refresh_xtream_epg(source_for_epg.clone()).await {
+            log(format!(
+                "Failed to refresh EPG for source {}: {:?}",
+                source_for_epg.name, e
+            ));
+        }
     }
     if let Some(id) = id {
         sql::update_source_last_updated(id)?;

@@ -5,19 +5,14 @@ use crate::sql;
 use crate::sql::insert_season;
 use crate::types::Channel;
 use crate::types::ChannelPreserve;
-use crate::types::EPG;
 use crate::types::Season;
 use crate::types::Source;
 use crate::types::XtreamStatus;
-use crate::utils::get_local_time;
 use crate::utils::get_user_agent_from_source;
 use anyhow::anyhow;
 use anyhow::{Context, Result};
-use base64::Engine;
-use base64::prelude::BASE64_STANDARD;
-use chrono::DateTime;
-use chrono::Local;
-use chrono::NaiveDateTime;
+use chrono::TimeZone;
+use chrono::Utc;
 use futures::future::join_all;
 use reqwest::Client;
 use rusqlite::Transaction;
@@ -35,7 +30,6 @@ const GET_SERIES_INFO: &str = "get_series_info";
 const GET_SERIES_CATEGORIES: &str = "get_series_categories";
 const GET_LIVE_STREAM_CATEGORIES: &str = "get_live_categories";
 const GET_VOD_CATEGORIES: &str = "get_vod_categories";
-const GET_EPG: &str = "get_simple_data_table";
 const LIVE_STREAM_EXTENSION: &str = "ts";
 const NO_SEASON_NUMBER: i64 = -9999;
 
@@ -53,6 +47,8 @@ struct XtreamStream {
     container_extension: Option<String>,
     #[serde(default)]
     tv_archive: serde_json::Value,
+    #[serde(default)]
+    epg_channel_id: serde_json::Value,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct XtreamSeries {
@@ -94,23 +90,6 @@ struct XtreamCategory {
     category_id: serde_json::Value,
     category_name: String,
 }
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct XtreamEPG {
-    epg_listings: Vec<XtreamEPGItem>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct XtreamEPGItem {
-    id: serde_json::Value,
-    title: String,
-    description: String,
-    start_timestamp: serde_json::Value,
-    stop_timestamp: serde_json::Value,
-    now_playing: u8,
-    has_archive: u8,
-    start: String,
-    end: String,
-}
 
 fn build_xtream_url(source: &mut Source) -> Result<Url> {
     let mut url = Url::parse(&source.url.clone().context("Missing URL")?)?;
@@ -129,6 +108,17 @@ fn build_xtream_url(source: &mut Source) -> Result<Url> {
             &source.password.clone().context("Missing password")?,
         );
     Ok(url)
+}
+
+// Xtream Codes panels also expose a bulk XMLTV dump for the whole
+// playlist at xmltv.php - a single reliable request instead of the
+// flaky per-channel get_simple_data_table calls in get_epg() below.
+// Reuses build_xtream_url for its username/password query pairs (and
+// url_origin side effect), just swapping the path.
+pub async fn refresh_xtream_epg(mut source: Source) -> Result<()> {
+    let mut url = build_xtream_url(&mut source)?;
+    url.set_path("/xmltv.php");
+    crate::xmltv::refresh_epg_from_url(source, url.to_string()).await
 }
 
 pub async fn get_xtream(mut source: Source, wipe: bool) -> Result<()> {
@@ -254,6 +244,7 @@ fn convert_xtream_live_to_channel(
     category_name: Option<String>,
 ) -> Result<Channel> {
     let stream_id = get_serde_json_u64(&stream.stream_id);
+    let tvg_id = get_serde_json_string(&stream.epg_channel_id).filter(|id| !id.is_empty() && id != "0");
     Ok(Channel {
         id: None,
         group: category_name.map(|x| x.trim().to_string()),
@@ -279,6 +270,7 @@ fn convert_xtream_live_to_channel(
         group_id: None,
         series_id: None,
         tv_archive: get_serde_json_u64(&stream.tv_archive).map(|x| x == 1),
+        tvg_id,
         season_id: None,
         episode_num: None,
         hidden: Some(false),
@@ -505,91 +497,68 @@ fn episode_to_channel(
         group_id: None,
         favorite: false,
         tv_archive: None,
+        tvg_id: None,
         hidden: Some(false),
     })
 }
 
-pub async fn get_epg(channel: Channel) -> Result<Vec<EPG>> {
+// Xtream's own per-channel EPG endpoint (get_simple_data_table) is what
+// this used to rely on to discover catch-up availability - but it's proven
+// unreliable for this specific purpose: providers commonly only return a
+// short rolling window (today, or a day or two), so a programme several
+// days back (now that EPG retention/panning makes that reachable) simply
+// isn't in the response, no matter how the result is filtered or matched.
+// Timeshift playback itself only ever needed the programme's start/end and
+// the channel's stream id - all of which are already known from whichever
+// EPG source populated the clicked entry (bulk XMLTV or otherwise) - so
+// build the URL directly from that instead of depending on this API at all.
+pub async fn get_timeshift_url_for_epg(
+    channel: Channel,
+    start_timestamp: i64,
+    end_timestamp: i64,
+) -> Result<String> {
     let mut source = sql::get_source_from_id(channel.source_id.context("no source id")?)?;
-    let mut url = build_xtream_url(&mut source)?;
-    let user_agent = get_user_agent_from_source(&source)?;
+    // source.url_origin is never persisted to the DB - it's only ever set
+    // as a side effect of build_xtream_url(), so it has to be called here
+    // explicitly or get_timeshift_url_base() below fails with "no origin".
+    build_xtream_url(&mut source)?;
     let stream_id = channel.stream_id.context("No stream id")?.to_string();
-    url.query_pairs_mut().append_pair("stream_id", &stream_id);
-    let epg: XtreamEPG = get_xtream_http_data(url, GET_EPG, &user_agent).await?;
-    let url = get_timeshift_url_base(&source)?;
-    let current_time = Local::now();
-    let mut otv_epgs = Vec::new();
-    for item in epg.epg_listings {
-        let item = xtream_epg_to_epg(item, &url, &stream_id)?;
-        if is_valid_epg(&item, &current_time)? {
-            otv_epgs.push(item);
-        }
-    }
-    Ok(otv_epgs)
-}
-
-fn is_valid_epg(epg: &EPG, now: &DateTime<Local>) -> Result<bool> {
-    let epg_start_local = crate::utils::get_local_time(epg.start_timestamp)?;
-    if epg_start_local < *now && !epg.has_archive && !epg.now_playing {
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-fn xtream_epg_to_epg(epg: XtreamEPGItem, url: &Url, stream_id: &str) -> Result<EPG> {
-    let start_timestamp =
-        get_serde_json_i64(&epg.start_timestamp).context("no valid start timestamp")?;
-    Ok(EPG {
-        epg_id: get_serde_json_string(&epg.id).context("no epg id")?,
-        title: String::from_utf8(BASE64_STANDARD.decode(&epg.title)?)?,
-        description: String::from_utf8(BASE64_STANDARD.decode(&epg.description)?)?,
-        start_time: get_local_time(start_timestamp)?
-            .format("%B %d, %H:%M")
-            .to_string(),
-        end_time: get_local_time(
-            get_serde_json_i64(&epg.stop_timestamp).context("no valid end timestamp")?,
-        )?
-        .format("%B %d, %H:%M")
-        .to_string(),
-        start_timestamp,
-        timeshift_url: if epg.has_archive == 1 {
-            Some(get_timeshift_url(
-                url.clone(),
-                epg.start,
-                epg.end,
-                stream_id,
-            )?)
-        } else {
-            None
-        },
-        has_archive: epg.has_archive == 1,
-        now_playing: epg.now_playing == 1,
-    })
-}
-
-fn get_timeshift_url_base(source: &Source) -> Result<Url> {
-    let mut url = Url::parse(source.url_origin.as_ref().context("no origin")?)?;
-    url.path_segments_mut()
-        .map_err(|_| anyhow::anyhow!("Can't mutate url"))?
-        .extend(&["streaming", "timeshift.php"]);
-    url.query_pairs_mut()
-        .append_pair("username", source.username.as_ref().context("no username")?)
-        .append_pair("password", source.password.as_ref().context("no password")?);
-    Ok(url)
-}
-
-fn get_timeshift_url(mut url: Url, start: String, end: String, stream_id: &str) -> Result<String> {
-    let start = NaiveDateTime::parse_from_str(&start, "%Y-%m-%d %H:%M:%S")?;
-    let duration = NaiveDateTime::parse_from_str(&end, "%Y-%m-%d %H:%M:%S")?
-        .signed_duration_since(start)
-        .num_minutes()
+    // timeshift.php wants the start time expressed in the panel's own local
+    // time, not UTC and not the viewer's local time. Confirmed by testing
+    // against a news channel's on-screen clock: both raw-UTC and
+    // BST-converted (UTC+1) requests landed exactly 1 hour earlier on
+    // screen than whatever was sent, while this account's reported
+    // Europe/Amsterdam timezone (CEST = UTC+2 in September) landed exactly
+    // on time. Rather than hardcoding +2h - which would break once
+    // Amsterdam falls back to CET for winter, or for any other provider
+    // hosted elsewhere - fetch the panel's own reported timezone and use it
+    // to compute the correct wall-clock offset for this specific instant.
+    let tz = get_source_timezone(&mut source).await?;
+    let start_local = Utc
+        .timestamp_opt(start_timestamp, 0)
+        .single()
+        .context("invalid start timestamp")?
+        .with_timezone(&tz)
+        .format("%Y-%m-%d:%H-%M")
         .to_string();
-    let start = start.format("%Y-%m-%d:%H-%M").to_string();
-    url.query_pairs_mut()
-        .append_pair("stream", stream_id)
-        .append_pair("start", &start)
-        .append_pair("duration", &duration);
-    Ok(url.to_string())
+    let duration_minutes = (end_timestamp - start_timestamp).max(0) / 60;
+    // The standard Xtream Codes catch-up endpoint is a path-based URL, not
+    // the streaming/timeshift.php query-string form (which returned a clean
+    // 404 - not an auth or param error - strongly suggesting that endpoint
+    // just doesn't exist on this panel). Catch-up content is served as
+    // segmented HLS rather than a direct transport stream on many panels,
+    // even when live channels are .ts, so this deliberately doesn't reuse
+    // LIVE_STREAM_EXTENSION.
+    let url = format!(
+        "{}/timeshift/{}/{}/{}/{}/{}.m3u8",
+        source.url_origin.as_ref().context("no origin")?,
+        source.username.as_ref().context("no username")?,
+        source.password.as_ref().context("no password")?,
+        duration_minutes,
+        start_local,
+        stream_id,
+    );
+    Ok(url)
 }
 
 async fn get_status(source: &mut Source) -> Result<(i64, XtreamStatus)> {
@@ -598,6 +567,32 @@ async fn get_status(source: &mut Source) -> Result<(i64, XtreamStatus)> {
     let client = Client::builder().user_agent(user_agent).build()?;
     let data = client.get(url).send().await?.json::<XtreamStatus>().await?;
     Ok((source.id.context("no id")?, data))
+}
+
+// Falls back to UTC rather than failing outright when the panel doesn't
+// report a timezone (or reports one chrono_tz doesn't recognize) - without
+// this, get_timeshift_url_for_epg would propagate the error and catch-up
+// would just silently be unavailable for the whole source.
+async fn get_source_timezone(source: &mut Source) -> Result<chrono_tz::Tz> {
+    let (_, status) = get_status(source).await?;
+    let tz_name = status.server_info.and_then(|info| info.timezone);
+    let tz_name = match tz_name {
+        Some(tz_name) => tz_name,
+        None => {
+            log::log(format!(
+                "Source '{}' did not report a timezone, defaulting to UTC for timeshift URLs",
+                source.name
+            ));
+            return Ok(chrono_tz::Tz::UTC);
+        }
+    };
+    chrono_tz::Tz::from_str(&tz_name).or_else(|e| {
+        log::log(format!(
+            "Source '{}' reported unrecognized timezone '{tz_name}' ({e}), defaulting to UTC for timeshift URLs",
+            source.name
+        ));
+        Ok(chrono_tz::Tz::UTC)
+    })
 }
 
 pub async fn get_all_expiries() -> Result<HashMap<i64, i64>> {
@@ -614,4 +609,19 @@ pub async fn get_all_expiries() -> Result<HashMap<i64, i64>> {
         })
         .collect();
     Ok(statuses)
+}
+
+// Surfaced in settings so it's clear which timezone convention the timeshift
+// URL (see get_timeshift_url_for_epg) is computing against for this source.
+pub async fn get_all_timezones() -> Result<HashMap<i64, String>> {
+    let mut sources = sql::get_sources_by_type(source_type::XTREAM)?;
+    let to_await = sources.iter_mut().map(|source| get_status(source));
+    let results: Vec<std::result::Result<(i64, XtreamStatus), anyhow::Error>> =
+        join_all(to_await).await;
+    let timezones: HashMap<i64, String> = results
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, status)| Some((id, status.server_info?.timezone?)))
+        .collect();
+    Ok(timezones)
 }

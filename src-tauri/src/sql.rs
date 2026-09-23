@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::LazyLock};
 use crate::log::log;
 use crate::sort_type;
 use crate::types::{
-    ChannelPreserve, CustomChannel, CustomChannelExtraData, EPGNotify, ExportedGroup, Group,
+    ChannelPreserve, CustomChannel, CustomChannelExtraData, EPG, EPGNotify, ExportedGroup, Group,
     IdName, Season,
 };
 use crate::{
@@ -234,6 +234,78 @@ fn apply_migrations() -> Result<()> {
               ANALYZE;
             "#,
         ),
+        M::up(
+            r#"
+              ALTER TABLE channels ADD COLUMN tvg_id varchar(255);
+              CREATE INDEX IF NOT EXISTS idx_channels_tvg_id ON channels(tvg_id);
+
+              CREATE TABLE IF NOT EXISTS "epg_programmes" (
+                "id" INTEGER PRIMARY KEY,
+                "source_id" INTEGER NOT NULL,
+                "tvg_id" varchar(255) NOT NULL,
+                "title" varchar(500),
+                "description" TEXT,
+                "start_timestamp" INTEGER NOT NULL,
+                "end_timestamp" INTEGER NOT NULL,
+                FOREIGN KEY (source_id) REFERENCES sources(id)
+              );
+              CREATE INDEX IF NOT EXISTS idx_epg_programmes_source ON epg_programmes(source_id);
+              CREATE INDEX IF NOT EXISTS idx_epg_programmes_lookup ON epg_programmes(tvg_id, start_timestamp);
+            "#,
+        ),
+        M::up(
+            r#"
+              ALTER TABLE sources ADD COLUMN epg_url varchar(500);
+            "#,
+        ),
+        M::up(
+            r#"
+              ALTER TABLE epg_programmes ADD COLUMN cached_at INTEGER NOT NULL DEFAULT 0;
+              ALTER TABLE epg_programmes ADD COLUMN has_archive INTEGER NOT NULL DEFAULT 0;
+              ALTER TABLE epg_programmes ADD COLUMN timeshift_url varchar(500);
+              CREATE INDEX IF NOT EXISTS idx_epg_programmes_source_tvg ON epg_programmes(source_id, tvg_id);
+            "#,
+        ),
+        M::up(
+            r#"
+              CREATE TABLE IF NOT EXISTS "epg_cache_status" (
+                "source_id" INTEGER NOT NULL,
+                "tvg_id" varchar(255) NOT NULL,
+                "checked_at" INTEGER NOT NULL,
+                PRIMARY KEY (source_id, tvg_id)
+              );
+            "#,
+        ),
+        M::up(
+            r#"
+              ALTER TABLE sources ADD COLUMN timezone varchar(64);
+            "#,
+        ),
+        M::up(
+            r#"
+              -- idx_epg_programmes_source is a strict prefix of
+              -- idx_epg_programmes_source_tvg (source_id, tvg_id), so it can
+              -- never serve a query the latter can't already serve just as
+              -- well. idx_epg_programmes_lookup (tvg_id, start_timestamp)
+              -- dates from when EPG was looked up by tvg_id alone; every
+              -- remaining query now also filters by source_id, which
+              -- idx_epg_programmes_source_tvg already covers. Both are dead
+              -- weight on every insert/delete against this table (which gets
+              -- fully rewritten per source on every EPG refresh).
+              DROP INDEX IF EXISTS idx_epg_programmes_source;
+              DROP INDEX IF EXISTS idx_epg_programmes_lookup;
+              -- epg_cache_status tracked per-channel live-Xtream-EPG fetch
+              -- timestamps for a caching scheme that no longer exists (EPG
+              -- is now bulk-fetched per source, not lazily per channel) -
+              -- nothing reads or writes it anymore.
+              DROP TABLE IF EXISTS epg_cache_status;
+            "#,
+        ),
+        M::up(
+            r#"
+              ALTER TABLE sources ADD COLUMN epg_retention_days INTEGER;
+            "#,
+        ),
     ]);
     migrations.to_latest(&mut sql)?;
     Ok(())
@@ -259,8 +331,8 @@ pub fn create_or_find_source_by_name(tx: &Transaction, source: &Source) -> Resul
         return Ok(id);
     }
     tx.execute(
-    "INSERT INTO sources (name, source_type, url, username, password, use_tvg_id, user_agent, max_streams, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    params![source.name, source.source_type.clone() as u8, source.url, source.username, source.password, source.use_tvg_id, source.user_agent, source.max_streams, chrono::Utc::now().timestamp()],
+    "INSERT INTO sources (name, source_type, url, username, password, use_tvg_id, user_agent, max_streams, last_updated, epg_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    params![source.name, source.source_type.clone() as u8, source.url, source.username, source.password, source.use_tvg_id, source.user_agent, source.max_streams, chrono::Utc::now().timestamp(), source.epg_url],
     )?;
     Ok(tx.last_insert_rowid())
 }
@@ -299,8 +371,8 @@ pub fn insert_season(tx: &Transaction, season: Season) -> Result<i64> {
 pub fn insert_channel(tx: &Transaction, channel: Channel) -> Result<()> {
     tx.execute(
         r#"
-INSERT INTO channels (name, group_id, image, url, source_id, media_type, series_id, favorite, stream_id, tv_archive, season_id, episode_num)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO channels (name, group_id, image, url, source_id, media_type, series_id, favorite, stream_id, tv_archive, tvg_id, season_id, episode_num)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (name, source_id, url, series_id, season_id)
 DO UPDATE SET
     url = excluded.url,
@@ -309,6 +381,7 @@ DO UPDATE SET
     image = excluded.image,
     series_id = excluded.series_id,
     tv_archive = excluded.tv_archive,
+    tvg_id = excluded.tvg_id,
     season_id = excluded.season_id;
 "#,
         params![
@@ -322,11 +395,103 @@ DO UPDATE SET
             channel.favorite,
             channel.stream_id,
             channel.tv_archive,
+            channel.tvg_id,
             channel.season_id,
             channel.episode_num
         ],
     )?;
     Ok(())
+}
+
+pub fn insert_epg_programme(
+    tx: &Transaction,
+    source_id: i64,
+    tvg_id: &str,
+    title: &str,
+    description: &str,
+    start_timestamp: i64,
+    end_timestamp: i64,
+    cached_at: i64,
+    has_archive: bool,
+    timeshift_url: Option<&str>,
+) -> Result<()> {
+    tx.execute(
+        r#"
+INSERT INTO epg_programmes (source_id, tvg_id, title, description, start_timestamp, end_timestamp, cached_at, has_archive, timeshift_url)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+"#,
+        params![
+            source_id,
+            tvg_id,
+            title,
+            description,
+            start_timestamp,
+            end_timestamp,
+            cached_at,
+            has_archive,
+            timeshift_url
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_epg_for_channel(
+    source_id: i64,
+    tvg_id: &str,
+    from_ts: i64,
+    to_ts: i64,
+) -> Result<Vec<EPG>> {
+    let sql = get_conn()?;
+    let now = chrono::Local::now();
+    let programmes: Vec<EPG> = sql
+        .prepare(
+            r#"
+        SELECT * FROM epg_programmes
+        WHERE source_id = ?
+        AND tvg_id = ?
+        AND end_timestamp >= ?
+        AND start_timestamp <= ?
+        ORDER BY start_timestamp
+    "#,
+        )?
+        .query_map(params![source_id, tvg_id, from_ts, to_ts], |row| {
+            row_to_epg_programme(row, &now)
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(programmes)
+}
+
+pub fn get_tvg_ids_for_source(source_id: i64) -> Result<std::collections::HashSet<String>> {
+    let sql = get_conn()?;
+    let tvg_ids: std::collections::HashSet<String> = sql
+        .prepare("SELECT DISTINCT tvg_id FROM channels WHERE source_id = ? AND tvg_id IS NOT NULL")?
+        .query_map(params![source_id], |row| row.get::<_, String>(0))?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(tvg_ids)
+}
+
+fn row_to_epg_programme(row: &Row, now: &chrono::DateTime<chrono::Local>) -> rusqlite::Result<EPG> {
+    let start_timestamp: i64 = row.get("start_timestamp")?;
+    let end_timestamp: i64 = row.get("end_timestamp")?;
+    let now_playing = start_timestamp <= now.timestamp() && end_timestamp > now.timestamp();
+    Ok(EPG {
+        epg_id: row.get::<_, i64>("id")?.to_string(),
+        title: row.get("title")?,
+        description: row.get("description")?,
+        start_time: crate::utils::get_local_time(start_timestamp)
+            .map(|t| t.format("%B %d, %H:%M").to_string())
+            .unwrap_or_default(),
+        start_timestamp,
+        end_time: crate::utils::get_local_time(end_timestamp)
+            .map(|t| t.format("%B %d, %H:%M").to_string())
+            .unwrap_or_default(),
+        end_timestamp,
+        timeshift_url: row.get("timeshift_url")?,
+        has_archive: row.get("has_archive")?,
+        now_playing,
+    })
 }
 
 pub fn insert_channel_headers(tx: &Transaction, headers: ChannelHttpHeaders) -> Result<()> {
@@ -485,7 +650,8 @@ pub fn search(filters: Filters) -> Result<Vec<Channel>> {
         AND media_type IN ({})
         AND source_id IN ({})
         AND url IS NOT NULL
-        AND hidden = 0"#,
+        AND hidden = 0
+        AND NOT EXISTS (SELECT 1 FROM groups g WHERE g.id = channels.group_id AND g.hidden = 1)"#,
         get_keywords_sql(keywords.len()),
         generate_placeholders(media_types.len()),
         generate_placeholders(filters.source_ids.len()),
@@ -599,6 +765,7 @@ fn season_row_to_channel(row: &Row) -> std::result::Result<Channel, rusqlite::Er
         source_id: None,
         stream_id: None,
         tv_archive: None,
+        tvg_id: None,
         url: None,
         episode_num: None,
         hidden: Some(false),
@@ -989,6 +1156,7 @@ fn row_to_group(row: &Row) -> std::result::Result<Channel, rusqlite::Error> {
         source_id: row.get("source_id")?,
         stream_id: None,
         tv_archive: None,
+        tvg_id: None,
         season_id: None,
         episode_num: None,
         hidden: row.get("hidden")?,
@@ -1011,6 +1179,7 @@ fn row_to_channel(row: &Row) -> std::result::Result<Channel, rusqlite::Error> {
         group: None,
         stream_id: row.get("stream_id")?,
         tv_archive: row.get("tv_archive")?,
+        tvg_id: row.get("tvg_id")?,
         season_id: row.get("season_id")?,
         hidden: row.get("hidden")?,
     };
@@ -1046,6 +1215,26 @@ pub fn delete_groups_by_source(tx: &Transaction, source_id: i64) -> Result<()> {
         WHERE source_id = ?
     "#,
         params!(source_id),
+    )?;
+    Ok(())
+}
+
+pub fn delete_epg_programmes_by_source(tx: &Transaction, source_id: i64) -> Result<()> {
+    tx.execute(
+        r#"
+        DELETE FROM epg_programmes
+        WHERE source_id = ?
+    "#,
+        params![source_id],
+    )?;
+    Ok(())
+}
+
+pub fn prune_old_epg(source_id: i64, cutoff: i64) -> Result<()> {
+    let sql = get_conn()?;
+    sql.execute(
+        "DELETE FROM epg_programmes WHERE source_id = ? AND end_timestamp < ?",
+        params![source_id, cutoff],
     )?;
     Ok(())
 }
@@ -1152,6 +1341,75 @@ pub fn hide_group(group_id: i64, hidden: bool) -> Result<()> {
     Ok(())
 }
 
+// Unlike every other group query (search_group filters hidden = 0,
+// search_hidden filters hidden = 1), this deliberately returns every
+// category regardless of state - it backs the Manage Categories page,
+// which needs to show and let you toggle both hidden and visible ones.
+pub fn get_all_groups() -> Result<Vec<Group>> {
+    let sql = get_conn()?;
+    let result = sql
+        .prepare(
+            r#"
+        SELECT * FROM groups
+        ORDER BY source_id, media_type, name
+    "#,
+        )?
+        .query_map(params![], row_to_custom_group)?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(result)
+}
+
+pub fn set_groups_hidden(ids: &[i64], hidden: bool) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let sql = get_conn()?;
+    let sql_query = format!(
+        "UPDATE groups SET hidden = ? WHERE id IN ({})",
+        generate_placeholders(ids.len())
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&hidden];
+    params.extend(to_to_sql(ids));
+    sql.execute(&sql_query, params.as_slice())?;
+    Ok(())
+}
+
+// Individually-hidden channels have no browsable path back to them once
+// hidden (they're excluded from every normal listing), so this backs the
+// Manage Categories page's "Individual Channels" section - the only place
+// they can be found again to unhide.
+pub fn get_hidden_channels(source_id: i64) -> Result<Vec<Channel>> {
+    let sql = get_conn()?;
+    let result = sql
+        .prepare(
+            r#"
+        SELECT * FROM channels
+        WHERE source_id = ? AND hidden = 1
+        ORDER BY name
+    "#,
+        )?
+        .query_map(params![source_id], row_to_channel)?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(result)
+}
+
+pub fn set_channels_hidden(ids: &[i64], hidden: bool) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let sql = get_conn()?;
+    let sql_query = format!(
+        "UPDATE channels SET hidden = ? WHERE id IN ({})",
+        generate_placeholders(ids.len())
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&hidden];
+    params.extend(to_to_sql(ids));
+    sql.execute(&sql_query, params.as_slice())?;
+    Ok(())
+}
+
 pub fn remove_last_watched(channel_id: i64) -> Result<()> {
     let sql = get_conn()?;
     sql.execute(
@@ -1210,6 +1468,9 @@ fn row_to_source(row: &Row) -> std::result::Result<Source, rusqlite::Error> {
         max_streams: row.get("max_streams")?,
         stream_user_agent: row.get("stream_user_agent")?,
         last_updated: row.get("last_updated")?,
+        epg_url: row.get("epg_url")?,
+        timezone: row.get("timezone")?,
+        epg_retention_days: row.get("epg_retention_days")?,
     })
 }
 
@@ -1270,6 +1531,9 @@ pub fn get_custom_source(name: String) -> Source {
         max_streams: None,
         stream_user_agent: None,
         last_updated: None,
+        epg_url: None,
+        timezone: None,
+        epg_retention_days: None,
     }
 }
 
@@ -1438,6 +1702,7 @@ fn row_to_custom_group(row: &Row) -> Result<Group, rusqlite::Error> {
         image: row.get("image")?,
         source_id: row.get("source_id")?,
         hidden: row.get("hidden")?,
+        media_type: row.get("media_type")?,
     })
 }
 
@@ -1531,6 +1796,7 @@ fn row_to_custom_channel(row: &Row) -> Result<CustomChannel, rusqlite::Error> {
             source_id: None,
             stream_id: None,
             tv_archive: None,
+            tvg_id: None,
             season_id: None,
             episode_num: None,
             hidden: Some(false),
@@ -1573,6 +1839,7 @@ pub fn get_custom_groups(source_id: i64) -> Result<Vec<ExportedGroup>> {
                 source_id: None,
                 id: None,
                 hidden: Some(false),
+                media_type: None,
             },
             channels: get_custom_channels(group.id, source_id)?,
         });
@@ -1596,7 +1863,7 @@ pub fn update_source(source: Source) -> Result<()> {
     sql.execute(
         r#"
         UPDATE sources
-        SET username = ?, password = ?, url = ?, use_tvg_id = ?, user_agent = ?, max_streams = ?, stream_user_agent = ?
+        SET username = ?, password = ?, url = ?, use_tvg_id = ?, user_agent = ?, max_streams = ?, stream_user_agent = ?, epg_url = ?, epg_retention_days = ?
         WHERE id = ?"#,
         params![
             source.username,
@@ -1606,6 +1873,8 @@ pub fn update_source(source: Source) -> Result<()> {
             source.user_agent,
             source.max_streams,
             source.stream_user_agent,
+            source.epg_url,
+            source.epg_retention_days,
             source.id
         ],
     )?;
@@ -1809,6 +2078,14 @@ pub fn clear_history() -> Result<()> {
     Ok(())
 }
 
+pub fn clear_epg_cache() -> Result<()> {
+    let mut sql = get_conn()?;
+    let tx = sql.transaction()?;
+    tx.execute("DELETE FROM epg_programmes", params![])?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn find_all_episodes_after(channel: &Channel) -> Result<Vec<String>> {
     let sql = get_conn()?;
     Ok(sql
@@ -1835,3 +2112,4 @@ pub fn update_source_last_updated(source_id: i64) -> Result<()> {
     )?;
     Ok(())
 }
+

@@ -1,0 +1,72 @@
+<app-nav-rail [active]="railItemEnum.ManageCategories" (select)="selectRail($event)"></app-nav-rail>
+<div class="page-wrapper">
+<div class="container px-5">
+  <h2 class="mt-4 mb-4 text-center">Manage Categories</h2>
+
+  <div class="row mb-3 align-items-center">
+    <div class="col-md-4 col-12">
+      <select class="form-select" [(ngModel)]="selectedSourceId" (ngModelChange)="onSourceChange()">
+        <option *ngFor="let source of sources" [ngValue]="source.id">{{ source.name }}</option>
+      </select>
+    </div>
+    <div class="col-md-4 col-12 mt-2 mt-md-0">
+      <input type="text" class="form-control" placeholder="Filter categories..." [(ngModel)]="filterText"
+        (ngModelChange)="onFilterChange()" />
+    </div>
+    <div class="col-md-4 col-12 mt-2 mt-md-0 d-flex justify-content-md-end gap-2">
+      <button class="btn btn-secondary" [disabled]="memory.Loading || selectedIds.size === 0"
+        (click)="hideSelected()">
+        Hide selected
+      </button>
+      <button class="btn btn-secondary" [disabled]="memory.Loading || selectedIds.size === 0"
+        (click)="unhideSelected()">
+        Unhide selected
+      </button>
+    </div>
+  </div>
+
+  <div *ngIf="loading" class="text-center mt-5">Loading...</div>
+
+  <div *ngIf="!loading" class="category-list">
+    <div *ngFor="let section of sections" class="type-section">
+      <div class="type-header" (click)="toggleType(section.mediaType)">
+        <svg fill="currentColor" viewBox="0 0 24 24" class="chevron" [ngClass]="{ open: isExpanded(section.mediaType) }">
+          <path d="M8.59,16.59L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.59Z" />
+        </svg>
+        <span>{{ section.label }} ({{ section.totalCount }})</span>
+      </div>
+      <div class="category-rows" *ngIf="isExpanded(section.mediaType)">
+        <div *ngFor="let row of section.rows" class="category-row" [class.selected]="isSelected(row.group)">
+          <input type="checkbox" class="form-check-input me-2" [checked]="isSelected(row.group)"
+            (click)="onRowClick(row, $event)" />
+          <span class="category-name">{{ row.group.name }}</span>
+          <span *ngIf="row.group.hidden" class="hidden-badge">Hidden</span>
+        </div>
+        <div *ngIf="section.rows.length === 0" class="text-muted category-row">No categories</div>
+      </div>
+    </div>
+
+    <div class="type-section">
+      <div class="type-header" (click)="toggleType(individualChannelsSection)">
+        <svg fill="currentColor" viewBox="0 0 24 24" class="chevron"
+          [ngClass]="{ open: isExpanded(individualChannelsSection) }">
+          <path d="M8.59,16.59L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.59Z" />
+        </svg>
+        <span>Individual Channels ({{ hiddenChannelRows.length }})</span>
+        <button class="btn btn-secondary btn-sm ms-auto" [disabled]="memory.Loading || selectedChannelIds.size === 0"
+          (click)="unhideSelectedChannels(); $event.stopPropagation()">
+          Unhide selected
+        </button>
+      </div>
+      <div class="category-rows" *ngIf="isExpanded(individualChannelsSection)">
+        <div *ngFor="let row of hiddenChannelRows" class="category-row" [class.selected]="isChannelSelected(row.channel)">
+          <input type="checkbox" class="form-check-input me-2" [checked]="isChannelSelected(row.channel)"
+            (click)="onChannelRowClick(row, $event)" />
+          <span class="category-name">{{ row.channel.name }}</span>
+        </div>
+        <div *ngIf="hiddenChannelRows.length === 0" class="text-muted category-row">No hidden channels</div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>

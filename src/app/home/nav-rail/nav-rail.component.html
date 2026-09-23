@@ -1,0 +1,43 @@
+<nav class="nav-rail">
+  <div class="rail-logo">
+    <img src="assets/app-icon.png" alt="Fred TV" />
+  </div>
+  <button *ngFor="let entry of items; let i = index" [id]="'viewMode-' + i" type="button" class="rail-item"
+    [ngbTooltip]="entry.label" placement="right" [ngClass]="{ active: active == entry.item }"
+    (click)="click(entry.item)">
+    <svg *ngIf="entry.item == railItemEnum.Favourites" fill="currentColor" viewBox="0 0 24 24" class="rail-icon">
+      <path
+        d="M12,17.27L18.18,21L16.54,13.97L22,9.24L14.81,8.62L12,2L9.19,8.62L2,9.24L7.45,13.97L5.82,21L12,17.27Z" />
+    </svg>
+    <svg *ngIf="entry.item == railItemEnum.Channels" fill="currentColor" viewBox="0 0 24 24" class="rail-icon">
+      <path
+        d="M21,3H3C1.89,3 1,3.89 1,5V17A2,2 0 0,0 3,19H8V21H16V19H21A2,2 0 0,0 23,17V5C23,3.89 22.1,3 21,3M21,17H3V5H21V17Z" />
+    </svg>
+    <svg *ngIf="entry.item == railItemEnum.Movies" fill="currentColor" viewBox="0 0 24 24" class="rail-icon">
+      <path d="M18,4L20,8H17L15,4H13L15,8H12L10,4H8L10,8H7L5,4H4A2,2 0 0,0 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V4H18Z" />
+    </svg>
+    <svg *ngIf="entry.item == railItemEnum.Series" fill="currentColor" viewBox="0 0 24 24" class="rail-icon">
+      <path
+        d="M18,4H4C2.89,4 2,4.89 2,6V16H4V6H18V4M22,8H8C6.89,8 6,8.89 6,10V20C6,21.11 6.89,22 8,22H22C23.11,22 24,21.11 24,20V10C24,8.89 23.11,8 22,8M16,17L11.5,14.5V19.5L16,17Z" />
+    </svg>
+    <svg *ngIf="entry.item == railItemEnum.History" fill="currentColor" viewBox="0 0 24 24" class="rail-icon">
+      <path
+        d="M13,3A9,9 0 0,0 4,12H1L4.89,15.89L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3M12,8V13L16.28,15.54L17,14.33L13.5,12.25V8H12Z" />
+    </svg>
+    <svg *ngIf="entry.item == railItemEnum.ManageCategories" fill="currentColor" viewBox="0 0 24 24"
+      class="rail-icon">
+      <path
+        d="M3,5H9V11H3V5M5,7V9H7V7H5M11,7H21V9H11V7M11,15H21V17H11V15M5,13.5L7.5,16L12.5,11L11.08,9.58L7.5,13.17L6.42,12.08L5,13.5Z" />
+    </svg>
+    <span class="rail-label">{{ entry.label }}</span>
+  </button>
+
+  <button [id]="'viewMode-6'" type="button" class="rail-item settings-item" [ngbTooltip]="'Settings'"
+    placement="right" (click)="click(railItemEnum.Settings)">
+    <svg fill="currentColor" viewBox="0 0 24 24" class="rail-icon">
+      <path
+        d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z" />
+    </svg>
+    <span class="rail-label">Settings</span>
+  </button>
+</nav>

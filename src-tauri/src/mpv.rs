@@ -163,7 +163,17 @@ fn get_play_args(
         let stream_caching_arg = format!("{ARG_CACHE}{ARG_NO}",);
         args.push(stream_caching_arg);
     }
-    if settings.enable_hwdec.unwrap_or(true) {
+    // Catch-up/timeshift streams commonly don't start exactly on a clean
+    // keyframe boundary (the server seeks into an already-recorded
+    // segment), which hardware decoding tends to choke on - confirmed via
+    // testing: the same URL played fine with --hwdec=no but produced
+    // "non-existing PPS referenced" / decoder failures with --hwdec=auto.
+    // Regular live/VOD playback is unaffected and keeps using hwdec.
+    let is_timeshift = channel
+        .url
+        .as_deref()
+        .is_some_and(|url| url.contains("/timeshift/"));
+    if settings.enable_hwdec.unwrap_or(true) && !is_timeshift {
         args.push(ARG_HWDEC.to_string());
     }
     if settings.enable_gpu.unwrap_or(false) {

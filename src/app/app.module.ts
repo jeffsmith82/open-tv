@@ -6,6 +6,7 @@ import { AppComponent } from './app.component';
 import { NgbModalModule, NgbTooltipModule, NgbTypeaheadModule } from '@ng-bootstrap/ng-bootstrap';
 import { FormsModule } from '@angular/forms';
 import { MatMenuModule } from '@angular/material/menu'
+import { ScrollingModule } from '@angular/cdk/scrolling'
 import { KeyboardShortcutsModule } from 'ng-keyboard-shortcuts';
 import { ToastrModule } from 'ngx-toastr';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
@@ -34,6 +35,11 @@ import { DownloadManagerComponent } from './download-manager/download-manager.co
 
 import { TimeAgoPipe } from "./pipes/time-ago.pipe";
 import { TimeUntilPipe } from './pipes/time-until.pipe';
+import { NavRailComponent } from './home/nav-rail/nav-rail.component';
+import { PlaylistSidebarComponent } from './home/playlist-sidebar/playlist-sidebar.component';
+import { EpgTimelineComponent } from './channel-tile/epg-timeline/epg-timeline.component';
+import { EpgTimelineHeaderComponent } from './home/epg-timeline-header/epg-timeline-header.component';
+import { ManageCategoriesComponent } from './manage-categories/manage-categories.component';
 
 @NgModule({
   declarations: [
@@ -62,6 +68,11 @@ import { TimeUntilPipe } from './pipes/time-until.pipe';
     SortButtonComponent,
     SortItemComponent,
     DownloadManagerComponent,
+    NavRailComponent,
+    PlaylistSidebarComponent,
+    EpgTimelineComponent,
+    EpgTimelineHeaderComponent,
+    ManageCategoriesComponent,
   ],
   imports: [
     BrowserModule,
@@ -73,7 +84,8 @@ import { TimeUntilPipe } from './pipes/time-until.pipe';
     KeyboardShortcutsModule.forRoot(),
     MatMenuModule,
     NgbModalModule,
-    NgbTypeaheadModule
+    NgbTypeaheadModule,
+    ScrollingModule
   ],
   providers: [
     provideAnimationsAsync()

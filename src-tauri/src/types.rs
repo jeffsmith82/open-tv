@@ -33,6 +33,8 @@ pub struct Channel {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode_num: Option<i64>,
     pub hidden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tvg_id: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]
@@ -66,16 +68,29 @@ pub struct Source {
     pub stream_user_agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_updated: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epg_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epg_retention_days: Option<u16>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
 pub struct XtreamStatus {
     pub user_info: XtreamStatusUserInfo,
+    #[serde(default)]
+    pub server_info: Option<XtreamServerInfo>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
 pub struct XtreamStatusUserInfo {
     pub exp_date: serde_json::Value,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+pub struct XtreamServerInfo {
+    pub timezone: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
@@ -137,6 +152,8 @@ pub struct Group {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_id: Option<i64>,
     pub hidden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<u8>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
@@ -172,6 +189,7 @@ pub struct EPG {
     pub start_time: String,
     pub start_timestamp: i64,
     pub end_time: String,
+    pub end_timestamp: i64,
     pub timeshift_url: Option<String>,
     pub has_archive: bool,
     pub now_playing: bool,

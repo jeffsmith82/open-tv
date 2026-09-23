@@ -90,6 +90,15 @@
   opacity: 25%;
 }
 
+.channel.list-layout {
+  width: 100%;
+}
+
+.list-layout .channel-title-container {
+  flex: 0 0 13rem;
+  width: 13rem;
+}
+
 .archive-icon {
   width: 1.25rem;
   height: 1.25rem;

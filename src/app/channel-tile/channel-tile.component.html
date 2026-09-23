@@ -1,16 +1,19 @@
 <div id="tile-{{ id }}" placement="top" tabindex="0" (keyup.enter)="click()" [ngClass]="{
     playing: starting,
-    faded: fade
-}" [ngbTooltip]="channel?.name" triggers="hover" (click)="click()" class="channel d-inline-flex p-2 align-items-center"
-  (contextmenu)="onRightClick($event)">
+    faded: fade,
+    'list-layout': layout == 'list'
+}" [ngbTooltip]="epgHovering ? '' : channel?.name" triggers="hover" (click)="click()"
+  class="channel d-inline-flex p-2 align-items-center" (contextmenu)="onRightClick($event)">
   <div class="image-container me-2">
     <img (error)="showImage = false" class="channel-image" *ngIf="channel?.image && showImage"
-      src="{{ channel?.image }}" />
+      src="{{ channel?.image }}" loading="lazy" decoding="async" width="50" height="72" />
   </div>
   <div class="channel-title-container d-flex flex-column justify-content-center">
     <div class="channel-title">{{ channel?.name }}</div>
-    <div class="channel-source">{{ getSourceName() }}</div>
+    <div class="channel-source">{{ sourceName }}</div>
   </div>
+  <app-epg-timeline *ngIf="layout == 'list' && showEPG()" class="me-2" [channel]="channel"
+    (mouseenter)="epgHovering = true" (mouseleave)="epgHovering = false"></app-epg-timeline>
   <div class="ms-auto d-flex flex-column justify-content-center align-items-center h-100">
     <svg *ngIf="channel?.tv_archive === true" fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
       class="archive-icon">
@@ -51,7 +54,6 @@
     <button [hidden]="!isMovie() || !downloading" mat-menu-item (click)="cancelDownload()">
       Cancel download
     </button>
-    <button [hidden]="!showEPG()" mat-menu-item (click)="showEPGModal()">EPG</button>
     <button [hidden]="!isCustom()" mat-menu-item (click)="edit()">Edit</button>
     <button [hidden]="!isCustom()" mat-menu-item (click)="share()">Share</button>
     <button [hidden]="!isLivestream()" mat-menu-item (click)="openRestreamModal()">

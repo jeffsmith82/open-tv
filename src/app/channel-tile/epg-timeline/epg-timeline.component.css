@@ -1,0 +1,57 @@
+:host {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.epg-timeline {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 0.25rem;
+  background-color: #202124;
+}
+
+.epg-block {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 0.5rem;
+  background-color: #343a40;
+  border-left: 1px solid #202124;
+  cursor: default;
+}
+
+.epg-block.now-playing {
+  background-color: #3c4450;
+}
+
+.epg-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: #d8dadd;
+}
+
+.now-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: #dc3545;
+  pointer-events: none;
+}
+
+.epg-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: #6c757d;
+}

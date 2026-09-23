@@ -1,0 +1,64 @@
+.nav-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 3.75rem;
+  height: 100vh;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1001;
+  background-color: #171819;
+  padding: 0.75rem 0;
+  gap: 0.35rem;
+}
+
+.rail-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 0 1rem 0;
+}
+
+.rail-logo img {
+  height: 2rem;
+  width: 2rem;
+  border-radius: 0.35rem;
+}
+
+.rail-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #9ba1a6;
+  padding: 0.65rem 0;
+  margin: 0 0.5rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.rail-item:hover {
+  color: white;
+  background-color: #212326;
+}
+
+.rail-item.active {
+  color: white;
+  background-color: #0d6efd;
+}
+
+.rail-icon {
+  height: 1.4rem;
+  width: 1.4rem;
+}
+
+.rail-label {
+  display: none;
+}
+
+.settings-item {
+  margin-top: auto;
+}

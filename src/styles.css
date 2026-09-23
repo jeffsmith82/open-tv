@@ -45,7 +45,14 @@ p {
 }
 
 html {
-  overflow-y: scroll;
+  /* Not `scroll` - the channel grid (home.component.css's .main-content)
+     is pinned to 100vh with overflow: hidden and scrolls entirely inside
+     its own cdk-virtual-scroll-viewport now, so the document itself never
+     overflows there. Forcing a permanently-reserved scrollbar gutter here
+     showed up as a second, non-functional scrollbar next to the grid's own
+     - `auto` still reserves nothing and shows one exactly when a page (e.g.
+     Settings, Setup) that DOES rely on normal document scrolling needs it. */
+  overflow-y: auto;
 }
 
 html,

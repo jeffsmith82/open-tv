@@ -1,0 +1,50 @@
+<aside class="playlist-sidebar" [ngClass]="{ collapsed: collapsed, resizing: resizing }"
+  [style.width.px]="manualWidthPx">
+  <div class="resize-handle" *ngIf="!collapsed" (mousedown)="startResize($event)"></div>
+  <div class="sidebar-header">
+    <span *ngIf="!collapsed">Playlists</span>
+    <svg (click)="toggleCollapsed()" fill="currentColor" viewBox="0 0 24 24" class="collapse-toggle"
+      [ngbTooltip]="collapsed ? 'Expand' : 'Collapse'" placement="right">
+      <path d="M8.59,16.59L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.59Z" />
+    </svg>
+  </div>
+
+  <ng-container *ngIf="!collapsed">
+    <div class="playlist-item all-playlists" [ngClass]="{ active: isAllSourcesSelected() }"
+      (click)="selectAllSources()">
+      All playlists
+    </div>
+
+    <div class="playlist-group" *ngFor="let source of sources">
+      <div class="playlist-item" [ngClass]="{ active: isSourceSelected(source) }" (click)="selectSource(source)"
+        [ngbTooltip]="source.name" placement="right" container="body">
+        <svg (click)="toggleExpand(source, $event)" fill="currentColor" viewBox="0 0 24 24" class="chevron"
+          [ngClass]="{ open: expanded.has(source.id!) }">
+          <path d="M8.59,16.59L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.59Z" />
+        </svg>
+        <span class="playlist-name">{{ source.name }}</span>
+      </div>
+
+      <div class="category-list" *ngIf="expanded.has(source.id!)">
+        <div class="category-item loading" *ngIf="loadingSource.has(source.id!)">Loading...</div>
+        <div class="category-item" *ngFor="let group of categoriesBySource.get(source.id!)"
+          [ngClass]="{ active: isCategorySelected(group) }" (click)="selectCategory(group)"
+          (contextmenu)="onCategoryRightClick($event, group)" [ngbTooltip]="group.name" placement="right"
+          container="body">
+          {{ group.name }}
+        </div>
+        <div class="category-item empty"
+          *ngIf="!loadingSource.has(source.id!) && categoriesBySource.get(source.id!)?.length === 0">
+          No categories
+        </div>
+      </div>
+    </div>
+  </ng-container>
+</aside>
+
+<div style="visibility: hidden; position: fixed" [style.left.px]="menuTopLeftPosition.x"
+  [style.top.px]="menuTopLeftPosition.y" [matMenuTriggerFor]="categoryMenu"></div>
+
+<mat-menu #categoryMenu="matMenu">
+  <button mat-menu-item (click)="hideCategory()">Hide</button>
+</mat-menu>

@@ -1,0 +1,83 @@
+.page-wrapper {
+  /* A plain margin-left here would fight the inner .container's own
+     Bootstrap auto-centering (both set margin-left on the same box) and
+     still center against the full viewport width rather than the space
+     actually left of the fixed nav rail. Shrinking the wrapper's width
+     to match, instead, gives the container the right box to center
+     itself within. */
+  margin-left: 3.75rem;
+  width: calc(100% - 3.75rem);
+}
+
+.category-list {
+  max-height: calc(100vh - 12rem);
+  overflow-y: auto;
+  /* WebKitGTK's overlay scrollbar floats on top of content instead of
+     reserving its own space, so without this the "Hidden" badge at the
+     right edge of a row ends up underneath it. */
+  padding-right: 1.25rem;
+}
+
+.type-section {
+  margin-bottom: 1rem;
+}
+
+.type-header {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #adb5bd;
+  border-bottom: 1px solid #343a40;
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+  font-size: 1.1rem;
+}
+
+.type-header:hover {
+  color: #fff;
+}
+
+.chevron {
+  width: 1.25rem;
+  height: 1.25rem;
+  transition: transform 0.2s ease;
+}
+
+.chevron.open {
+  transform: rotate(90deg);
+}
+
+.category-rows {
+  padding-left: 1.5rem;
+}
+
+.category-row {
+  display: flex;
+  align-items: center;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.25rem;
+  user-select: none;
+}
+
+.category-row:hover {
+  background: #343a40;
+}
+
+.category-row.selected {
+  background: #0d6efd33;
+}
+
+.category-name {
+  flex: 1;
+}
+
+.hidden-badge {
+  font-size: 0.75rem;
+  color: #ffc107;
+  border: 1px solid #ffc107;
+  border-radius: 0.25rem;
+  padding: 0 0.4rem;
+  margin-left: 0.5rem;
+}

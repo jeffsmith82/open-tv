@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 use anyhow::Context;
 use anyhow::Error;
 
@@ -34,6 +33,7 @@ pub mod sql;
 pub mod types;
 pub mod utils;
 pub mod view_type;
+pub mod xmltv;
 pub mod xtream;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -66,6 +66,10 @@ pub fn run() {
             bulk_update,
             get_xtream,
             refresh_source,
+            refresh_epg_only,
+            refresh_xtream_epg_only,
+            prune_old_epg,
+            build_timeshift_url,
             get_episodes,
             favorite_channel,
             unfavorite_channel,
@@ -95,6 +99,7 @@ pub fn run() {
             channel_exists,
             update_source,
             get_epg,
+            get_epg_schedule,
             download,
             add_epg,
             remove_epg,
@@ -115,7 +120,13 @@ pub fn run() {
             hide_channel,
             hide_group,
             remove_from_history,
-            get_all_expiries
+            get_all_expiries,
+            get_all_timezones,
+            clear_epg_cache,
+            get_all_groups,
+            set_groups_hidden,
+            get_hidden_channels,
+            set_channels_hidden
         ])
         .setup(|app| {
             app.manage(Mutex::new(AppState {
@@ -259,6 +270,39 @@ async fn refresh_source(source: Source) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn refresh_epg_only(source: Source) -> Result<(), String> {
+    xmltv::refresh_epg(source).await.map_err(map_err_frontend)
+}
+
+#[tauri::command]
+async fn refresh_xtream_epg_only(source: Source) -> Result<(), String> {
+    xtream::refresh_xtream_epg(source)
+        .await
+        .map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn prune_old_epg(source: Source) -> Result<(), String> {
+    xmltv::prune_old_epg(source).map_err(map_err_frontend)
+}
+
+// Only ever called on explicit user action (clicking a programme in the
+// EPG timeline that's already ended, on a catch-up-capable channel) -
+// builds the timeshift URL straight from that programme's own timestamps
+// instead of depending on Xtream's unreliable per-channel EPG endpoint
+// (see xtream::get_timeshift_url_for_epg for why).
+#[tauri::command]
+async fn build_timeshift_url(
+    channel: Channel,
+    start_timestamp: i64,
+    end_timestamp: i64,
+) -> Result<String, String> {
+    xtream::get_timeshift_url_for_epg(channel, start_timestamp, end_timestamp)
+        .await
+        .map_err(map_err_frontend)
+}
+
+#[tauri::command]
 async fn refresh_all() -> Result<(), String> {
     utils::refresh_all().await.map_err(map_err_frontend)
 }
@@ -288,6 +332,26 @@ fn hide_channel(id: i64, hidden: bool) -> Result<(), String> {
 #[tauri::command(async)]
 fn hide_group(id: i64, hidden: bool) -> Result<(), String> {
     sql::hide_group(id, hidden).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn get_all_groups() -> Result<Vec<Group>, String> {
+    sql::get_all_groups().map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn set_groups_hidden(ids: Vec<i64>, hidden: bool) -> Result<(), String> {
+    sql::set_groups_hidden(&ids, hidden).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn get_hidden_channels(source_id: i64) -> Result<Vec<Channel>, String> {
+    sql::get_hidden_channels(source_id).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn set_channels_hidden(ids: Vec<i64>, hidden: bool) -> Result<(), String> {
+    sql::set_channels_hidden(&ids, hidden).map_err(map_err_frontend)
 }
 
 #[tauri::command(async)]
@@ -427,9 +491,75 @@ fn update_source(source: Source) -> Result<(), String> {
     sql::update_source(source).map_err(map_err_frontend)
 }
 
+// Timeline display only ever needs a window of a few days around wherever
+// the timeline is currently panned to (see epgTimelineWindow.ts +
+// EPG_FETCH_LOOKBACK/LOOKAHEAD_SECONDS on the frontend) - not the whole
+// retention range, which is only needed by the EPG modal's prev/next
+// paging (get_epg_schedule below). Fetching the full range for every
+// channel tile as it scrolls into view was the main cost behind slow
+// scrolling through the channel grid.
 #[tauri::command]
-async fn get_epg(channel: Channel) -> Result<Vec<EPG>, String> {
-    xtream::get_epg(channel).await.map_err(map_err_frontend)
+async fn get_epg(
+    channel: Channel,
+    start_timestamp: i64,
+    end_timestamp: i64,
+) -> Result<Vec<EPG>, String> {
+    epg_dispatch(channel, start_timestamp, end_timestamp)
+        .await
+        .map_err(map_err_frontend)
+}
+
+// Full retention-window fetch, for the EPG modal's prev/next paging through
+// a single channel's whole kept schedule - only called once, when the
+// modal actually opens, rather than for every visible timeline row.
+#[tauri::command]
+async fn get_epg_schedule(channel: Channel) -> Result<Vec<EPG>, String> {
+    epg_dispatch_full(channel).await.map_err(map_err_frontend)
+}
+
+const EPG_READ_LOOKAHEAD_SECONDS: i64 = 7 * 24 * 60 * 60;
+
+// How far back/forward reads are allowed to reach - has to match how far
+// back was actually kept (see xmltv::refresh_epg_from_url/prune_old_epg)
+// - otherwise panning the timeline back further than retention would just
+// show nothing even for programmes that are genuinely still stored, and a
+// too-wide request would just waste work re-reading data that was pruned.
+fn epg_read_bounds(source_id: i64) -> anyhow::Result<(i64, i64)> {
+    let now = chrono::Utc::now().timestamp();
+    let source = sql::get_source_from_id(source_id)?;
+    let retention_days = source
+        .epg_retention_days
+        .map(|d| d as i64)
+        .unwrap_or(xmltv::DEFAULT_EPG_RETENTION_DAYS);
+    let lookback = retention_days * 24 * 60 * 60;
+    Ok((now - lookback, now + EPG_READ_LOOKAHEAD_SECONDS))
+}
+
+// Custom-guide and bulk-fetched Xtream EPG (see refresh_xtream_epg_only)
+// both land in the same epg_programmes table, keyed the same way
+// (normalized tvg_id), so there's only one read path now regardless of
+// source type - no per-channel live fetch here at all (see
+// build_timeshift_url for how catch-up URLs get built on demand instead).
+async fn epg_dispatch(
+    channel: Channel,
+    start_timestamp: i64,
+    end_timestamp: i64,
+) -> anyhow::Result<Vec<EPG>> {
+    let source_id = channel.source_id.context("no source id")?;
+    let tvg_id = channel.tvg_id.clone().context("No EPG data for this channel")?;
+    let normalized = utils::normalize_tvg_id(&tvg_id);
+    let (min_ts, max_ts) = epg_read_bounds(source_id)?;
+    let from_ts = start_timestamp.max(min_ts);
+    let to_ts = end_timestamp.min(max_ts);
+    sql::get_epg_for_channel(source_id, &normalized, from_ts, to_ts)
+}
+
+async fn epg_dispatch_full(channel: Channel) -> anyhow::Result<Vec<EPG>> {
+    let source_id = channel.source_id.context("no source id")?;
+    let tvg_id = channel.tvg_id.clone().context("No EPG data for this channel")?;
+    let normalized = utils::normalize_tvg_id(&tvg_id);
+    let (from_ts, to_ts) = epg_read_bounds(source_id)?;
+    sql::get_epg_for_channel(source_id, &normalized, from_ts, to_ts)
 }
 
 #[tauri::command]
@@ -550,6 +680,11 @@ fn clear_history() -> Result<(), String> {
 }
 
 #[tauri::command(async)]
+fn clear_epg_cache() -> Result<(), String> {
+    sql::clear_epg_cache().map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
 fn is_container() -> bool {
     utils::is_container()
 }
@@ -568,4 +703,9 @@ async fn cancel_play(
 #[tauri::command]
 async fn get_all_expiries() -> Result<HashMap<i64, i64>, String> {
     xtream::get_all_expiries().await.map_err(map_err_frontend)
+}
+
+#[tauri::command]
+async fn get_all_timezones() -> Result<HashMap<i64, String>, String> {
+    xtream::get_all_timezones().await.map_err(map_err_frontend)
 }
